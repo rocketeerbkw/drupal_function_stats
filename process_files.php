@@ -5,109 +5,124 @@ $redis = new Predis\Client(NULL, ['prefix' => 'gdtaf']);
 
 $dir = "/Users/rocketeerbkw/gotta_download_them_all/allmodules/";
 
-
 try {
-  $fs = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+  // Iterate through all the modules we have downloaded.
+  $all_modules = new FilesystemIterator($dir);
 
-  $c = 0;
-  foreach ($fs as $file) {
-    // Skip directorys (just in case)
-    if ($file->isDir()) {
+  foreach ($all_modules as $module_dir_path => $module_dir_info) {
+    // Skip files that might be at this level. Only interested in module
+    // directories.
+    if (!$module_dir_info->isDir()) {
       continue;
     }
 
-    // Skip git stuff
-    if (strstr($file->getPath(), '.git') !== FALSE) {
+    // Look for a .info file
+    chdir($module_dir_path);
+    $info_files = glob('*.info');
+
+    if ($info_files === FALSE || count($info_files) === 0) {
+      // No .info files
       continue;
     }
 
-    // Only interested in module, install, inc, php extensions
-    if (!in_array($file->getExtension(), array('module', 'install', 'inc', 'php'))) {
-      continue;
-    }
+    // Let's assume there's only one .info and it's the first result.
+    $module_name = str_replace('.info', '', $info_files[0]);
 
-    // The name of the module should be the name of the first directory after
-    // $modules_dir.
-    $module_dir = str_replace($dir, '', $file->getPathName());
-    $module_name = substr($module_dir, 0, strpos($module_dir, '/'));
+    // For every module, get all the functions it defines.
+    $cur_module = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($module_dir_path, FilesystemIterator::SKIP_DOTS));
 
-    print $module_dir . ': ';
-
-    // Check if we've processed this file before
-    if ($redis->sismember('processed_files', $module_dir)) {
-      print ' already processed.' . PHP_EOL;
-      continue;
-    }
-
-    // Skip sandbox projects for now
-    if (is_numeric($module_name)) {
-      print 'Skipping Sandbox.' . PHP_EOL;
-      continue;
-    }
-
-    //print $file->getPathName() . ' ~ ' . $file->getFilename() . ' ~ ' . $file->getExtension() . PHP_EOL;
-    //print_r($file->getFileInfo()) . PHP_EOL;
-    //$command = 'php tokenize_file.php ' . escapeshellarg($dir) . ' ' . escapeshellarg($file->getPathName());
-    //passthru(escapeshellcmd($command));
-
-    // Get all tokens from the file.
-    $tokens = token_get_all(file_get_contents($file));
-
-    // Aggregate all tokens on one line. Discard any token that's not a function
-    // declaration or string.
-    $tokens_by_line = array();
-    foreach ($tokens as $token) {
-      if (!in_array($token[0], array(T_FUNCTION, T_STRING))) {
+    $c = 0;
+    foreach ($cur_module as $module_path => $module_info) {
+      // Skip directorys (just in case).
+      if ($module_info->isDir()) {
         continue;
       }
 
-      $tokens_by_line[$token[2]][] = $token;
-    }
-
-    // Discard all lines that aren't function declarations.
-    $function_tokens = array();
-    foreach ($tokens_by_line as $tokens) {
-      // If the line only has one token, it can't be a function declaration.
-      if (count($tokens) == 1) {
+      // Skip git stuff.
+      if (strstr($module_info->getPath(), '.git') !== FALSE) {
         continue;
       }
 
-      // If none of the tokens on a line are T_FUNCTION, it can't be a function
-      // delcaration.
-      $has_function = FALSE;
+      // Only interested in module, install, inc, php extensions.
+      if (!in_array($module_info->getExtension(), array('module', 'install', 'inc', 'php'))) {
+        continue;
+      }
+
+      // The path of the file if the module folder was root.
+      $path_from_module = str_replace($dir, '', $module_info->getPathName());
+
+      print $path_from_module . ': ';
+
+      // Check if we've processed this file before.
+      if ($redis->sismember('processed_files', $path_from_module)) {
+        print ' already processed.' . PHP_EOL;
+        continue;
+      }
+
+      //print $module_info->getPathName() . ' ~ ' . $module_info->getFilename() . ' ~ ' . $module_info->getExtension() . PHP_EOL;
+      //print_r($module_info->getFileInfo()) . PHP_EOL;
+      //$command = 'php tokenize_file.php ' . escapeshellarg($dir) . ' ' . escapeshellarg($module_info->getPathName());
+      //passthru(escapeshellcmd($command));
+
+      // Get all tokens from the file..
+      $tokens = token_get_all(file_get_contents($module_info));
+
+      // Aggregate all tokens on one line. Discard any token that's not a function
+      // declaration or string.
+      $tokens_by_line = array();
       foreach ($tokens as $token) {
-        if ($token[0] === T_FUNCTION) {
-          $has_function = TRUE;
+        if (!in_array($token[0], array(T_FUNCTION, T_STRING))) {
+          continue;
         }
+
+        $tokens_by_line[$token[2]][] = $token;
       }
 
-      if (!$has_function) {
-        continue;
+      // Discard all lines that aren't function declarations.
+      $function_tokens = array();
+      foreach ($tokens_by_line as $tokens) {
+        // If the line only has one token, it can't be a function declaration.
+        if (count($tokens) == 1) {
+          continue;
+        }
+
+        // If none of the tokens on a line are T_FUNCTION, it can't be a function
+        // delcaration.
+        $has_function = FALSE;
+        foreach ($tokens as $token) {
+          if ($token[0] === T_FUNCTION) {
+            $has_function = TRUE;
+          }
+        }
+
+        if (!$has_function) {
+          continue;
+        }
+
+        // Get the function name.
+        $func_name = $tokens[1][1];
+
+        $function_tokens[] = $func_name;
       }
 
-      // Get the function name.
-      $func_name = $tokens[1][1];
+      // Remove module "namespace" from function. Turns MODULE_function_name() into
+      // function_name().
+      $functions = array_map(function($value) use ($module_name) {
+        return str_replace(array('_' . $module_name, $module_name . '_'), array($module_name, ''), $value);
+      }, $function_tokens);
 
-      $function_tokens[] = $func_name;
+      foreach ($functions as $function) {
+        $redis->zincrby('function_list', 1, $function);
+      }
+
+      $redis->sadd('processed_files', $path_from_module);
+
+      //print_r($functions);
+      print 'Done.' . PHP_EOL;
+      $tokens = NULL;
+
+      $c++;
     }
-
-    // Remove module "namespace" from function. Turns MODULE_function_name() into
-    // function_name().
-    $functions = array_map(function($value) use ($module_name) {
-      return str_replace(array('_' . $module_name, $module_name . '_'), array($module_name, ''), $value);
-    }, $function_tokens);
-
-    foreach ($functions as $function) {
-      $redis->zincrby('function_list', 1, $function);
-    }
-
-    $redis->sadd('processed_files', $module_dir);
-
-    //print_r($functions);
-    print 'Done.' . PHP_EOL;
-    $tokens = NULL;
-
-    $c++;
   }
 }
 catch (UnexpectedValueException $e) {
