@@ -10,7 +10,7 @@ function myErrorHandler($errno, $errstr, $errfile, $errline) {
 set_error_handler('myErrorHandler');
 
 require "vendor/autoload.php";
-$redis = new Predis\Client(NULL, ['prefix' => 'gdtaf']);
+$redis = new Predis\Client(NULL, ['prefix' => 'gdtaf:']);
 
 $dir = "/Users/rocketeerbkw/gotta_download_them_all/allmodules/";
 
