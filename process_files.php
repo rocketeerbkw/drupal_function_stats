@@ -1,5 +1,14 @@
 <?php
 
+// Need this to overcome some Pharborist errors
+function myErrorHandler($errno, $errstr, $errfile, $errline) {
+  if ( E_RECOVERABLE_ERROR===$errno ) {
+    throw new ErrorException($errstr, $errno, 0, $errfile, $errline);
+  }
+  return false;
+}
+set_error_handler('myErrorHandler');
+
 require "vendor/autoload.php";
 $redis = new Predis\Client(NULL, ['prefix' => 'gdtaf']);
 
@@ -9,6 +18,7 @@ try {
   // Iterate through all the modules we have downloaded.
   $all_modules = new FilesystemIterator($dir);
 
+  $c = 0;
   foreach ($all_modules as $module_dir_path => $module_dir_info) {
     // Skip files that might be at this level. Only interested in module
     // directories.
@@ -31,7 +41,6 @@ try {
     // For every module, get all the functions it defines.
     $cur_module = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($module_dir_path, FilesystemIterator::SKIP_DOTS));
 
-    $c = 0;
     foreach ($cur_module as $module_path => $module_info) {
       // Skip directorys (just in case).
       if ($module_info->isDir()) {
@@ -64,64 +73,32 @@ try {
       //$command = 'php tokenize_file.php ' . escapeshellarg($dir) . ' ' . escapeshellarg($module_info->getPathName());
       //passthru(escapeshellcmd($command));
 
-      // Get all tokens from the file..
-      $tokens = token_get_all(file_get_contents($module_info));
+      // Find and track each function found in the file.
+      try {
+        $tree = Pharborist\Parser::parseFile($module_info->getPathName());
+        $functions = $tree->children(Pharborist\Filter::isInstanceOf(
+          new Pharborist\Functions\FunctionDeclarationNode()
+        ));
+        foreach ($functions as $func) {
+          // Get the name of the function w/o the module namespace
+          $clean_func = preg_replace('/^_?' . $module_name . '/i', 'MODULE', $func->getName());
 
-      // Aggregate all tokens on one line. Discard any token that's not a function
-      // declaration or string.
-      $tokens_by_line = array();
-      foreach ($tokens as $token) {
-        if (!in_array($token[0], array(T_FUNCTION, T_STRING))) {
-          continue;
+          $redis->zincrby('function_list', 1, $clean_func);
+          print '.';
         }
 
-        $tokens_by_line[$token[2]][] = $token;
+        $redis->sadd('processed_files', $path_from_module);
+
+        print ' Done.' . PHP_EOL;
       }
-
-      // Discard all lines that aren't function declarations.
-      $function_tokens = array();
-      foreach ($tokens_by_line as $tokens) {
-        // If the line only has one token, it can't be a function declaration.
-        if (count($tokens) == 1) {
-          continue;
-        }
-
-        // If none of the tokens on a line are T_FUNCTION, it can't be a function
-        // delcaration.
-        $has_function = FALSE;
-        foreach ($tokens as $token) {
-          if ($token[0] === T_FUNCTION) {
-            $has_function = TRUE;
-          }
-        }
-
-        if (!$has_function) {
-          continue;
-        }
-
-        // Get the function name.
-        $func_name = $tokens[1][1];
-
-        $function_tokens[] = $func_name;
+      catch (Exception $e) {
+        print ' Error ' . $e->getMessage() . PHP_EOL;
       }
+    }
 
-      // Remove module "namespace" from function. Turns MODULE_function_name() into
-      // function_name().
-      $functions = array_map(function($value) use ($module_name) {
-        return str_replace(array('_' . $module_name, $module_name . '_'), array($module_name, ''), $value);
-      }, $function_tokens);
-
-      foreach ($functions as $function) {
-        $redis->zincrby('function_list', 1, $function);
-      }
-
-      $redis->sadd('processed_files', $path_from_module);
-
-      //print_r($functions);
-      print 'Done.' . PHP_EOL;
-      $tokens = NULL;
-
-      $c++;
+    $c++;
+    if ($c > 10) {
+      //break;
     }
   }
 }
