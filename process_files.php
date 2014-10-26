@@ -53,6 +53,7 @@ try {
       }
 
       // Only interested in module, install, inc, php extensions.
+      // TODO skip tpl.php and api.php files?
       if (!in_array($module_info->getExtension(), array('module', 'install', 'inc', 'php'))) {
         continue;
       }
@@ -60,24 +61,19 @@ try {
       // The path of the file if the module folder was root.
       $path_from_module = str_replace($dir, '', $module_info->getPathName());
 
-      print $path_from_module . ': ';
-
       // Check if we've processed this file before.
       if ($redis->sismember('processed_files', $path_from_module)) {
-        print ' already processed.' . PHP_EOL;
+        //print $path_from_module . ': already processed.' . PHP_EOL;
         continue;
       }
 
-      //print $module_info->getPathName() . ' ~ ' . $module_info->getFilename() . ' ~ ' . $module_info->getExtension() . PHP_EOL;
-      //print_r($module_info->getFileInfo()) . PHP_EOL;
-      //$command = 'php tokenize_file.php ' . escapeshellarg($dir) . ' ' . escapeshellarg($module_info->getPathName());
-      //passthru(escapeshellcmd($command));
+      print $path_from_module . ': ';
 
       // Find and track each function found in the file.
       try {
         $tree = Pharborist\Parser::parseFile($module_info->getPathName());
         $functions = $tree->children(Pharborist\Filter::isInstanceOf(
-          new Pharborist\Functions\FunctionDeclarationNode()
+          '\Pharborist\Functions\FunctionDeclarationNode'
         ));
         foreach ($functions as $func) {
           // Get the name of the function w/o the module namespace
@@ -98,6 +94,7 @@ try {
 
     $c++;
     if ($c > 10) {
+      // For debugging, only process $c modules then quit.
       //break;
     }
   }
