@@ -1,28 +1,36 @@
 <?php
 
 /**
- * Download a full list of all modules on drupal.org by scraping
- * https://www.drupal.org/project/usage. This can take awhile the first time as
- * the pages aren't cached.
- *
- * Note: there is a one-liner at https://www.drupal.org/node/1057386#comment-4376134
- *       but it no longer works since the usage page is now using a pager.
+ * Download a full list of all modules on drupal.org by using the API. More info
+ * at https://www.drupal.org/about-drupalorg/api.
  */
 
-$url = 'https://www.drupal.org/project/usage?page=';
+$url = 'https://www.drupal.org/api-d7/node.json?type=project_module';
 $modules = array();
-$page = 0;
 
 do {
-  $html = file_get_contents($url . $page);
+  print $url . PHP_EOL;
+  $options = array(
+    'http' => array(
+      'user_agent' => 'get_list_of_modules.php from https://github.com/rocketeerbkw/drupal_function_stats',
+      'header' => 'Accept: application/json',
+    ),
+  );
+  $context = stream_context_create($options);
+  $response = file_get_contents($url, false, $context);
+  $data = json_decode($response);
 
-  $matches = array();
-  preg_match_all('#href="[^"]+usage/([^"]+)"#', $html, $matches);
+  foreach ($data->list as $module) {
+    $modules[] = $module->field_project_machine_name;
+  }
 
-  $modules = array_merge($modules, $matches[1]);
+  $url = isset($data->next) ? $data->next : FALSE;
 
-  $page++;
-} while (strstr($html, 'Go to next page') !== FALSE);
+  // The next links are always provided without a format [#2253947].
+  // Formatless URLs are 301 redirected to format URLs but strip all query
+  // query parameters [#2364755].
+  $url = str_replace('node?', 'node.json?', $url);
+} while ($url);
 
 $file = fopen('project_usage.txt', 'w');
 fwrite($file, implode("\n", $modules));
